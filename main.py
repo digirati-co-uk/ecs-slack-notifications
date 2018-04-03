@@ -1,0 +1,201 @@
+import json
+import boto3
+import os
+import time
+from collections import Counter
+from slackclient import SlackClient
+
+slack_token = os.environ["SLACK_API_TOKEN"]
+channel = os.environ['SLACK_CHANNEL']
+included_clusters = os.environ['INCLUDED_CLUSTERS']
+
+sc = SlackClient(slack_token)
+
+
+channels = sc.api_call(
+    'channels.list',
+    exclude_archived='true',
+    exclude_members='true',
+)
+
+for c in channels['channels']:
+    if c['name'] == channel:
+        channel_id = c['id']
+
+
+def lambda_handler(event, context):
+    id_name = ""
+    new_record = {}
+
+    # For debugging so you can see raw event format.
+    print('Here is the event:')
+    print(json.dumps(event))
+
+    if event["source"] != "aws.ecs":
+        raise ValueError(
+            "Function only supports input from events with a source type of: aws.ecs")
+
+    # Switch on task/container events.
+    table_name = ""
+    if event["detail-type"] == "ECS Task State Change":
+        table_name = "ecs-slack-ECSTaskState"
+        id_name = "taskArn"
+        event_id = event["detail"]["taskArn"]
+    elif event["detail-type"] == "ECS Container Instance State Change":
+        table_name = "ecs-slack-ECSCtrInstanceState"
+        id_name = "containerInstanceArn"
+        event_id = event["detail"]["containerInstanceArn"]
+    else:
+        raise ValueError(
+            "detail-type for event is not a supported type. Exiting without saving event.")
+
+    new_record["cw_version"] = event["version"]
+    new_record.update(event["detail"])
+
+    # "status" is a reserved word in DDB, but it appears in containerPort
+    # state change messages.
+    if "status" in event:
+        new_record["current_status"] = event["status"]
+        new_record.pop("status")
+
+    # Look first to see if you have received a newer version of an event ID.
+    # If the version is OLDER than what you have on file, do not process it.
+    # Otherwise, update the associated record with this latest information.
+    print("Looking for recent event with same ID...")
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = dynamodb.Table(table_name)
+    saved_event = table.get_item(
+        Key={
+            id_name: event_id
+        }
+    )
+    if "Item" in saved_event:
+        # Compare events and reconcile.
+        print("EXISTING EVENT DETECTED: Id " + event_id + " - reconciling")
+        if saved_event["Item"]["version"] < event["detail"]["version"]:
+            print("Received event is more recent version than stored event - updating")
+            ttl_value = long(time.time()) + 86400
+            new_record['TTL'] = ttl_value
+            table.put_item(
+                Item=new_record
+            )
+            update_task_digest(event)
+        else:
+            print("Received event is more recent version than stored event - ignoring")
+    else:
+        print("Saving new event - ID " + event_id)
+        update_task_digest(event)
+
+        table.put_item(
+            Item=new_record
+        )
+
+
+def update_task_digest(event):
+    table_name = 'ecs-slack-ECSTaskDigest'
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = dynamodb.Table(table_name)
+    event_detail = event['detail']
+    event_id = event_detail['startedBy']
+    task_id = event_detail['taskArn'].split('/')[-1]
+
+    saved_event = get_dynamo_item(table, 'startedBy', event_id)
+
+    update_slack = True
+    if "Item" in saved_event:
+        item = saved_event['Item']
+        if 'slack_ts' not in item:
+            print('Existing digest doesn\'t have a slack timestamp yet. Skipping post.')
+            update_slack = False
+        # Compare events and reconcile.
+        print("EXISTING DIGEST DETECTED: Id " + event_id + " - reconciling")
+        item['tasks'][task_id] = event_detail['lastStatus']
+    else:
+        print('CREATING NEW DIGEST: Id ' + event_id)
+        item = {
+            'startedBy': event_id,
+            'cluster': event_detail['clusterArn'].split('/')[-1],
+            'service': event_detail['group'].split(':')[-1],
+            'tasks': {
+                task_id: event_detail['lastStatus']
+            },
+            'updatedAt': event_detail['updatedAt']
+        }
+    if item['cluster'] not in included_clusters.split(','):
+        update_slack = False
+    if update_slack:
+        ts = post_update_to_slack(event, item)
+        item['slack_ts'] = ts
+    ttl_value = long(time.time()) + 120
+    item['TTL'] = ttl_value
+    # Store the update item in dynamodb
+    table.put_item(
+        Item=item
+    )
+
+
+def post_update_to_slack(event, item):
+    e = event['detail']
+    cluster = e['clusterArn'].split('/')[-1]
+    service = e['group'].split(':')[-1]
+    td = e['taskDefinitionArn'].split('/')[-1]
+    ecs_url = 'https://console.aws.amazon.com/ecs/home?region=us-east-1#/'
+    srv_url = ecs_url + 'clusters/' + cluster + '/services/' + service + '/tasks'
+    td_url = ecs_url + 'taskDefinitions/' + td.replace(':', '/')
+    td_link = '<' + td_url + '|' + td + '>'
+
+    # Report scaling in/out stats
+    rs = ['RUNNING', 'STOPPED']
+    cmpltd = Counter(x for x in item['tasks'].values() if x in rs)
+    completed_stats = '\n'.join(['{}: {}'.format(*x) for x in cmpltd.items()])
+    pgrss = Counter(x for x in item['tasks'].values() if x not in rs)
+    in_progress_stats = '\n'.join(['{}: {}'.format(*x) for x in pgrss.items()])
+    fields = [
+        {
+            'title': 'Completed',
+            'value': completed_stats,
+            'short': 'true'
+        },
+    ]
+    if len(in_progress_stats) == 0:
+        color = 'good'
+    else:
+        color = 'warning'
+        fields.append(
+            {
+                'title': 'In Progress',
+                'value': in_progress_stats,
+                'short': 'true'
+            },
+        )
+    params = {
+        'channel': channel_id,
+        'attachments': [
+            {
+                'title': '{} {}'.format(cluster, service),
+                'title_link': srv_url,
+                'color': color,
+                'fields': fields,
+                'footer': td_link + ' ' + e['startedBy']
+            }
+        ]
+    }
+
+    if 'slack_ts' in item:
+        ts = item['slack_ts']
+        res = sc.api_call('chat.update', ts=ts, **params)
+    else:
+        res = sc.api_call('chat.postMessage', **params)
+        ts = res['message']['ts']
+    print('Slack response:')
+    print(res)
+    return ts
+
+
+def get_dynamo_item(table, key, value):
+    item = table.get_item(
+        Key={
+            key: value
+        }
+    )
+    return item

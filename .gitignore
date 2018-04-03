@@ -1,0 +1,5 @@
+.env.yml
+.serverless
+.vscode
+node_modules/
+venv/
