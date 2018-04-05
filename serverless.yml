@@ -27,6 +27,11 @@ provider:
         - "arn:aws:dynamodb:*:*:table/${self:custom.instance_state_table}"
         - "arn:aws:dynamodb:*:*:table/${self:custom.task_state_table}"
         - "arn:aws:dynamodb:*:*:table/${self:custom.task_digest_table}"
+    - Effect: "Allow"
+      Action:
+        - "ecs:Describe*"
+        - "ecs:List*"
+      Resource: "*"
 
 
 functions:
