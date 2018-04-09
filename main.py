@@ -2,12 +2,20 @@ import json
 import boto3
 import os
 import time
+
+from botocore.exceptions import ClientError
 from collections import Counter
 from slackclient import SlackClient
 
 slack_token = os.environ["SLACK_API_TOKEN"]
 channel = os.environ['SLACK_CHANNEL']
 included_clusters = os.environ['INCLUDED_CLUSTERS']
+region = os.environ['AWS_REGION']
+
+digest_item_ttl = 2592000
+state_item_ttl = 86400
+slack_ts_timeout = 600
+
 
 sc = SlackClient(slack_token)
 
@@ -62,7 +70,7 @@ def lambda_handler(event, context):
     # If the version is OLDER than what you have on file, do not process it.
     # Otherwise, update the associated record with this latest information.
     print("Looking for recent event with same ID...")
-    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    dynamodb = boto3.resource("dynamodb", region_name=region)
     table = dynamodb.Table(table_name)
     saved_event = table.get_item(
         Key={
@@ -74,7 +82,7 @@ def lambda_handler(event, context):
         print("EXISTING EVENT DETECTED: Id " + event_id + " - reconciling")
         if saved_event["Item"]["version"] < event["detail"]["version"]:
             print("Received event is more recent version than stored event - updating")
-            ttl_value = long(time.time()) + 86400
+            ttl_value = long(time.time()) + state_item_ttl
             new_record['TTL'] = ttl_value
             table.put_item(
                 Item=new_record
@@ -93,7 +101,7 @@ def lambda_handler(event, context):
 
 def update_task_digest(event):
     table_name = 'ecs-slack-ECSTaskDigest'
-    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    dynamodb = boto3.resource("dynamodb", region_name=region)
     table = dynamodb.Table(table_name)
     event_detail = event['detail']
     event_id = event_detail['startedBy']
@@ -104,29 +112,39 @@ def update_task_digest(event):
     update_slack = True
     if "Item" in saved_event:
         item = saved_event['Item']
-        if 'slack_ts' not in item:
-            print('Existing digest doesn\'t have a slack timestamp yet. Skipping post.')
-            update_slack = False
+        if float(item['slack_ts']) < float(time.time()) - slack_ts_timeout:
+            print('Slack timestamp is older than ' +
+                  str(slack_ts_timeout) + ' seconds. Posting a new message.')
+            del item['slack_ts']
         # Compare events and reconcile.
         print("EXISTING DIGEST DETECTED: Id " + event_id + " - reconciling")
         item['tasks'][task_id] = event_detail['lastStatus']
     else:
         print('CREATING NEW DIGEST: Id ' + event_id)
+        td = get_task_definition(event_detail['taskDefinitionArn'])
+        containers = td['containerDefinitions']
+        images = []
+        for c in containers:
+            images.append(c['image'].split('/')[-1])
+
         item = {
             'startedBy': event_id,
             'cluster': event_detail['clusterArn'].split('/')[-1],
             'service': event_detail['group'].split(':')[-1],
+            'definition': event_detail['taskDefinitionArn'].split('/')[-1],
             'tasks': {
                 task_id: event_detail['lastStatus']
             },
-            'updatedAt': event_detail['updatedAt']
+            'updatedAt': event_detail['updatedAt'],
+            'createdAt': event_detail['createdAt'],
+            'images': images,
         }
     if item['cluster'] not in included_clusters.split(','):
         update_slack = False
     if update_slack:
         ts = post_update_to_slack(event, item)
         item['slack_ts'] = ts
-    ttl_value = long(time.time()) + 120
+    ttl_value = long(time.time()) + digest_item_ttl
     item['TTL'] = ttl_value
     # Store the update item in dynamodb
     table.put_item(
@@ -139,7 +157,7 @@ def post_update_to_slack(event, item):
     cluster = e['clusterArn'].split('/')[-1]
     service = e['group'].split(':')[-1]
     td = e['taskDefinitionArn'].split('/')[-1]
-    ecs_url = 'https://console.aws.amazon.com/ecs/home?region=us-east-1#/'
+    ecs_url = 'https://console.aws.amazon.com/ecs/home?region=' + region + '#/'
     srv_url = ecs_url + 'clusters/' + cluster + '/services/' + service + '/tasks'
     td_url = ecs_url + 'taskDefinitions/' + td.replace(':', '/')
     td_link = '<' + td_url + '|' + td + '>'
@@ -172,7 +190,7 @@ def post_update_to_slack(event, item):
         'channel': channel_id,
         'attachments': [
             {
-                'title': '{} {}'.format(cluster, service),
+                'title': '{} {} - {}'.format(cluster, service, " ".join(item['images'])),
                 'title_link': srv_url,
                 'color': color,
                 'fields': fields,
@@ -190,6 +208,16 @@ def post_update_to_slack(event, item):
     print('Slack response:')
     print(res)
     return ts
+
+
+def get_task_definition(td):
+    try:
+        ecs = boto3.client('ecs', region_name=region)
+        res = ecs.describe_task_definition(taskDefinition=td)
+    except ClientError as e:
+        print(e.response['Error']['Message'])
+        sys.exit(1)
+    return res['taskDefinition']
 
 
 def get_dynamo_item(table, key, value):
