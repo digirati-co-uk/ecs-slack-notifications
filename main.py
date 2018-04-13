@@ -11,10 +11,9 @@ slack_token = os.environ["SLACK_API_TOKEN"]
 channel = os.environ['SLACK_CHANNEL']
 included_clusters = os.environ['INCLUDED_CLUSTERS']
 region = os.environ['AWS_REGION']
-
-digest_item_ttl = 2592000
-state_item_ttl = 86400
-slack_ts_timeout = 600
+digest_item_ttl = os.getenv('DIGEST_ITEM_TTL', 2592000)
+state_item_ttl = os.getenv('STATE_ITEM_TTL', 86400)
+slack_ts_timeout = os.getenv('SLACK_TS_TIMEOUT', 600)
 
 
 sc = SlackClient(slack_token)
@@ -216,7 +215,7 @@ def get_task_definition(td):
         res = ecs.describe_task_definition(taskDefinition=td)
     except ClientError as e:
         print(e.response['Error']['Message'])
-        sys.exit(1)
+        raise
     return res['taskDefinition']
 
 
