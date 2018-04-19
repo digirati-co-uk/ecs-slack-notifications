@@ -81,7 +81,7 @@ def lambda_handler(event, context):
         print("EXISTING EVENT DETECTED: Id " + event_id + " - reconciling")
         if saved_event["Item"]["version"] < event["detail"]["version"]:
             print("Received event is more recent version than stored event - updating")
-            ttl_value = long(time.time()) + state_item_ttl
+            ttl_value = long(time.time()) + int(state_item_ttl)
             new_record['TTL'] = ttl_value
             table.put_item(
                 Item=new_record
@@ -111,10 +111,14 @@ def update_task_digest(event):
     update_slack = True
     if "Item" in saved_event:
         item = saved_event['Item']
-        if float(item['slack_ts']) < float(time.time()) - slack_ts_timeout:
-            print('Slack timestamp is older than ' +
-                  str(slack_ts_timeout) + ' seconds. Posting a new message.')
-            del item['slack_ts']
+        if 'slack_ts' in item:
+            if float(item['slack_ts']) < float(time.time()) - int(slack_ts_timeout):
+                print('Slack timestamp is older than ' +
+                      str(slack_ts_timeout) + ' seconds. Posting a new message.')
+                del item['slack_ts']
+        else:
+            print('No slack_ts for existing digest. Skipping Slack post.')
+            update_slack = False
         # Compare events and reconcile.
         print("EXISTING DIGEST DETECTED: Id " + event_id + " - reconciling")
         item['tasks'][task_id] = event_detail['lastStatus']
@@ -143,7 +147,7 @@ def update_task_digest(event):
     if update_slack:
         ts = post_update_to_slack(event, item)
         item['slack_ts'] = ts
-    ttl_value = long(time.time()) + digest_item_ttl
+    ttl_value = long(time.time()) + int(digest_item_ttl)
     item['TTL'] = ttl_value
     # Store the update item in dynamodb
     table.put_item(
