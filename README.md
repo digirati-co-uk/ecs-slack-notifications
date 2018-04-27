@@ -11,6 +11,7 @@ npm install -g serverless/serverless#master
 2. Install python requirements serverless plugin in the app directory.
 ```bash
 npm install serverless-python-requirements
+npm install serverless-dynamodb-autoscaling
 ```
 
 3. Create a Slack application and copy the token. The app needs the following permission scopes:
