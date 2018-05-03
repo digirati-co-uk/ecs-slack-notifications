@@ -122,6 +122,15 @@ def update_task_digest(event):
         # Compare events and reconcile.
         print("EXISTING DIGEST DETECTED: Id " + event_id + " - reconciling")
         item['tasks'][task_id] = event_detail['lastStatus']
+
+        if 'stoppedReason' in event_detail:
+            if 'stoppedReason' in item:
+                item['stoppedReason'][task_id] = event_detail['stoppedReason']
+            else:
+                item['stoppedReason'] = {
+                    task_id: event_detail['stoppedReason']
+                }
+
     else:
         print('CREATING NEW DIGEST: Id ' + event_id)
         td = get_task_definition(event_detail['taskDefinitionArn'])
@@ -140,7 +149,7 @@ def update_task_digest(event):
             },
             'updatedAt': event_detail['updatedAt'],
             'createdAt': event_detail['createdAt'],
-            'images': images,
+            'images': images
         }
     if item['cluster'] not in included_clusters.split(','):
         update_slack = False
@@ -167,26 +176,45 @@ def post_update_to_slack(event, item):
 
     # Report scaling in/out stats
     rs = ['RUNNING', 'STOPPED']
-    cmpltd = Counter(x for x in item['tasks'].values() if x in rs)
-    completed_stats = '\n'.join(['{}: {}'.format(*x) for x in cmpltd.items()])
-    pgrss = Counter(x for x in item['tasks'].values() if x not in rs)
-    in_progress_stats = '\n'.join(['{}: {}'.format(*x) for x in pgrss.items()])
+    stats = {}
+    completed = Counter(x for x in item['tasks'].values() if x in rs)
+    stats['completed'] = '\n'.join(
+        ['{}: {}'.format(*x) for x in completed.items()])
+
+    in_progress = Counter(x for x in item['tasks'].values() if x not in rs)
+    stats['in_progress'] = '\n'.join(
+        ['{}: {}'.format(*x) for x in in_progress.items()])
+
+    if 'stoppedReason' in item:
+        failed = Counter(x for x in item['stoppedReason'].values(
+        ) if not x.startswith('Scaling activity'))
+        stats['failed'] = '\n'.join(['{}: {}'.format(*x)
+                                     for x in failed.items()])
+
     fields = [
         {
             'title': 'Completed',
-            'value': completed_stats,
+            'value': stats['completed'],
             'short': 'true'
         },
     ]
-    if len(in_progress_stats) == 0:
+    if len(stats['in_progress']) == 0:
         color = 'good'
     else:
         color = 'warning'
         fields.append(
             {
                 'title': 'In Progress',
-                'value': in_progress_stats,
+                'value': stats['in_progress'],
                 'short': 'true'
+            },
+        )
+    if 'failed' in stats and len(stats['failed']) != 0:
+        fields.append(
+            {
+                'title': 'Failed',
+                'value': stats['failed'],
+                'short': 'false'
             },
         )
     params = {
