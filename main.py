@@ -210,6 +210,7 @@ def post_update_to_slack(event, item):
             },
         )
     if 'failed' in stats and len(stats['failed']) != 0:
+        color = 'danger'
         fields.append(
             {
                 'title': 'Failed',
