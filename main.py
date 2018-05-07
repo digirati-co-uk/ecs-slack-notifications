@@ -81,7 +81,7 @@ def lambda_handler(event, context):
         print("EXISTING EVENT DETECTED: Id " + event_id + " - reconciling")
         if saved_event["Item"]["version"] < event["detail"]["version"]:
             print("Received event is more recent version than stored event - updating")
-            ttl_value = long(time.time()) + int(state_item_ttl)
+            ttl_value = int(time.time()) + int(state_item_ttl)
             new_record['TTL'] = ttl_value
             table.put_item(
                 Item=new_record
@@ -151,12 +151,14 @@ def update_task_digest(event):
             'createdAt': event_detail['createdAt'],
             'images': images
         }
-    if item['cluster'] not in included_clusters.split(','):
+    if included_clusters.lower() == 'all':
+        update_slack = True
+    elif item['cluster'] not in included_clusters.split(','):
         update_slack = False
     if update_slack:
         ts = post_update_to_slack(event, item)
         item['slack_ts'] = ts
-    ttl_value = long(time.time()) + int(digest_item_ttl)
+    ttl_value = int(time.time()) + int(digest_item_ttl)
     item['TTL'] = ttl_value
     # Store the update item in dynamodb
     table.put_item(

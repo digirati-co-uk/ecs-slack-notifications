@@ -26,6 +26,7 @@ lambda:
     SLACK_VERIFICATION_TOKEN: "asdf1234asdf"
     SLACK_CHANNEL: "ecs-notifications"
     INCLUDED_CLUSTERS: "production,staging"
+    INCLUDED_CLUSTERS: "all"  # notifications for all clusters
 ```
 
 5. Install the app on aws
