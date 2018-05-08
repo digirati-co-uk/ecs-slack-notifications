@@ -183,7 +183,7 @@ def handle_slack_command(params):
 
     td = res['service']['deployments'][0]['taskDefinition'].split('/')[-1]
     msg = 'Deploying {}.'.format(td)
-    if cluster in notifications_filter:
+    if cluster in notifications_filter or 'all' == notifications_filter.lower():
         cid = get_slack_channel_id(notifications_channel)
         msg += ' Notifications in <#{}|{}>'.format(cid, notifications_channel)
     payload = create_msg_payload(text=msg)

@@ -1,10 +1,21 @@
 plugins:
   - serverless-python-requirements
+  - serverless-dynamodb-autoscaling
 
 custom:
   instance_state_table: ${self:service}-ECSCtrInstanceState
   task_state_table: ${self:service}-ECSTaskState
   task_digest_table: ${self:service}-ECSTaskDigest
+  capacities:
+    - table: ECSTaskDigest  # Autoscale Digest Table read/write
+      read:
+        minimum: 5          # Minimum read capacity
+        maximum: 50         # Maximum read capacity
+        usage: 0.75         # Usage percentage
+      write:
+        minimum: 5
+        maximum: 50
+        usage: 0.5
 
   pythonRequirements:
     dockerizePip: true
