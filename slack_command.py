@@ -1,5 +1,4 @@
 import os
-import sys
 import boto3
 import json
 
@@ -37,7 +36,7 @@ def help():
 
 def verify_slack_token(token):
     if token != expected_token:
-        print 'Request token ' + token + ' does not match expected'
+        print('Request token ' + token + ' does not match expected')
         raise Exception('Invalid request token')
 
 
@@ -45,14 +44,18 @@ def register_task_def_with_new_image(ecs, ecr, cluster, service, artifact):
     # Get ECR repo
     srv = desc_service(ecs, cluster, service)
     td_arn = srv['taskDefinition']
-    print 'Current task deinition for {} {}: {}'.format(cluster, service, td_arn.split('/')[-1])
+    print('Current task deinition for {} {}: {}'.format(
+        cluster,
+        service,
+        td_arn.split('/')[-1]
+    ))
     td = desc_task_definition(ecs, td_arn)
     containers = td['containerDefinitions']
 
     try:
-        ecr_repo, ecr_iamge_tag = containers[0]['image'].split(':')
-    except:
-        # If no tag was specified - defaulting to latest tag
+        ecr_repo, ecr_image_tag = containers[0]['image'].split(':')
+    except ValueError:
+            # If no tag was specified - defaulting to latest tag
         ecr_repo = containers[0]['image']
 
     # Check if image tag exist in the ECR repo
@@ -74,7 +77,7 @@ def register_task_def_with_new_image(ecs, ecr, cluster, service, artifact):
         else:
             raise RuntimeError(e)
 
-    print 'Found image: {}:{}'.format(ecr_repo, artifact)
+    print('Found image: {}:{}'.format(ecr_repo, artifact))
 
     ###########################################################################
     # Force new deployment with the current active task definition if
@@ -83,27 +86,35 @@ def register_task_def_with_new_image(ecs, ecr, cluster, service, artifact):
     # docker image (think tag:latest).
     # We skip registering a new task definition revision as it's not needed.
     ###########################################################################
-    if ecr_iamge_tag and ecr_iamge_tag == artifact:
-        print '{}:{} is already in the current task definition.'.format(ecr_repo.split('/')[-1], ecr_iamge_tag)
-        print 'Forcing a new deployment of {}'.format(td_arn.split('/')[-1])
+    if ecr_image_tag and ecr_image_tag == artifact:
+        print('{}:{} is already in the current task definition.'.format(
+            ecr_repo.split('/')[-1],
+            ecr_image_tag
+        ))
+        print('Forcing a new deployment of {}'.format(td_arn.split('/')[-1]))
         return td_arn
 
     ###########################################################################
     # Register new task definition with the new image
     ###########################################################################
     new_td = td.copy()
-    for k in ['status', 'compatibilities', 'taskDefinitionArn', 'revision', 'requiresAttributes']:
+    for k in ['status', 'compatibilities', 'taskDefinitionArn',
+              'revision', 'requiresAttributes']:
         del new_td[k]
     new_td['containerDefinitions'][0]['image'] = ':'.join([ecr_repo, artifact])
     new_td_res = ecs.register_task_definition(**new_td)
     td_name = new_td_res['taskDefinition']['taskDefinitionArn'].split('/')[-1]
-    print 'Registered new task definition: {}'.format(td_name)
+    print('Registered new task definition: {}'.format(td_name))
 
     return td_name
 
 
 def deploy_task_definition(ecs, cluster, service, task_def):
-    print 'Deploying {} to {} {}...'.format(task_def.split('/')[-1], cluster, service)
+    print('Deploying {} to {} {}...'.format(
+        task_def.split('/')[-1],
+        cluster,
+        service
+    ))
     params = {
         'cluster': cluster,
         'service': service,
@@ -127,7 +138,7 @@ def desc_service(ecs, cluster, service):
             raise ValueError('Cluster not found.')
         else:
             raise RuntimeError(e)
-    except:
+    except IndexError:
         raise ValueError('Service not found.')
 
     return srv
@@ -138,8 +149,10 @@ def desc_task_definition(ecs, taskDefinition):
     return res['taskDefinition']
 
 
-def create_msg_payload(channel=None, username=None, attachments=None, text=None, response_type='in_channel', replace_original='false', delete_original='false'):
-    if isinstance(attachments, list) == False:
+def create_msg_payload(channel=None, username=None, attachments=None,
+                       text=None, response_type='in_channel',
+                       replace_original='false', delete_original='false'):
+    if not isinstance(attachments, list):
         attachments = [attachments]
     payload = {
         'response_type': response_type,
@@ -164,7 +177,7 @@ def handle_slack_command(params):
     try:
         command_text = params['text'][0]
         cluster, service, reference = command_text.split()
-    except:
+    except ValueError:
         return help()
 
     sess = boto3.session.Session(region_name=region)
@@ -192,8 +205,8 @@ def handle_slack_command(params):
 
 
 def response(statusCode, body):
-    print 'LAMBDA RESPONSE:'
-    print body
+    print('LAMBDA RESPONSE:')
+    print(body)
     return {
         'statusCode': statusCode,
         'body': json.dumps(body, ensure_ascii=False)
@@ -208,7 +221,7 @@ def handle_error(error_message):
 def handler(event, context):
     req_body = event['body']
     params = parse_qs(req_body)
-    print params
+    print(params)
 
     msg = handle_slack_command(params)
     return response(200, msg)
