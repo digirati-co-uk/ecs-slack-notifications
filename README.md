@@ -26,6 +26,7 @@ lambda:
     SLACK_VERIFICATION_TOKEN: "asdf1234asdf"
     SLACK_CHANNEL: "ecs-notifications"
     INCLUDED_CLUSTERS: "production,staging"
+    SERVICE_GROUPS_TABLE: "ecs-slack-ServiceGroups"
 ```
 
 5. Install the app on aws
@@ -37,3 +38,17 @@ sls deploy
 Create a slash command `/ecs-deploy` in the Slack app. Set the `Request URL` to the API Gateway created by serverless. 
   - Go to API Gateway and select dev-ecs-slack
   - Under stages get the `Invoke URL` from POST method under /deploy
+
+7. Configure service groups (optional)
+Create items in dynamodb table `ecs-slack-ServiceGroups` to configure service groups. Example:
+```json
+{
+  "group": "myapp",
+  "services": [
+    "myapp",
+    "myapp-worker-1",
+    "myapp-worker-2"
+  ]
+}
+```
+Then to trigger a deployment in slack run: `/ecs-deploy <cluster_name> myapp <reference> -g`

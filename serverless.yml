@@ -6,6 +6,7 @@ custom:
   instance_state_table: ${self:service}-ECSCtrInstanceState
   task_state_table: ${self:service}-ECSTaskState
   task_digest_table: ${self:service}-ECSTaskDigest
+  service_groups_table: ${self:service}-ServiceGroups
   capacities:
     - table: ECSTaskDigest  # Autoscale Digest Table read/write
       read:
@@ -38,6 +39,7 @@ provider:
         - "arn:aws:dynamodb:*:*:table/${self:custom.instance_state_table}"
         - "arn:aws:dynamodb:*:*:table/${self:custom.task_state_table}"
         - "arn:aws:dynamodb:*:*:table/${self:custom.task_digest_table}"
+        - "arn:aws:dynamodb:*:*:table/${self:custom.service_groups_table}"
     - Effect: "Allow"
       Action:
         - "ecs:Describe*"
@@ -142,3 +144,17 @@ resources:
         TimeToLiveSpecification:
           AttributeName: TTL
           Enabled: True
+
+    ServiceGroups:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.service_groups_table}
+        AttributeDefinitions:
+          - AttributeName: group
+            AttributeType: S
+        KeySchema:
+          - AttributeName: group
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 5
+          WriteCapacityUnits: 5

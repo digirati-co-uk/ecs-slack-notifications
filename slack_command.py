@@ -12,6 +12,7 @@ slack_token = os.environ["SLACK_API_TOKEN"]
 expected_token = os.environ['SLACK_VERIFICATION_TOKEN']
 notifications_channel = os.environ['SLACK_CHANNEL']
 notifications_filter = os.environ['INCLUDED_CLUSTERS']
+service_groups_table = os.environ['SERVICE_GROUPS_TABLE']
 
 
 def get_slack_channel_id(channel_name):
@@ -30,7 +31,9 @@ def get_slack_channel_id(channel_name):
 
 
 def help():
-    msg = {'text': 'Usage: /ecs-deploy [cluster] [service] [reference]'}
+    usage = 'Usage: /ecs-deploy [cluster] [service] [reference] ' + \
+        '[OPTIONS]\n\nOptions:\n  -g    Run group deployment'
+    msg = {'text': usage}
     return create_msg_payload(attachments=msg, response_type='ephemeral')
 
 
@@ -38,6 +41,18 @@ def verify_slack_token(token):
     if token != expected_token:
         print('Request token ' + token + ' does not match expected')
         raise Exception('Invalid request token')
+
+
+def get_service_group(table, group):
+    try:
+        response = table.get_item(
+            Key={
+                'group': group
+            }
+        )
+        return response['Item']['services']
+    except KeyError as e:
+        raise ValueError('Service group not found.')
 
 
 def register_task_def_with_new_image(ecs, ecr, cluster, service, artifact):
@@ -149,6 +164,13 @@ def desc_task_definition(ecs, taskDefinition):
     return res['taskDefinition']
 
 
+def deploy(ecs, ecr, cluster, service, reference):
+    td = register_task_def_with_new_image(ecs, ecr, cluster,
+                                          service, reference)
+    res = deploy_task_definition(ecs, cluster, service, td)
+    return res
+
+
 def create_msg_payload(channel=None, username=None, attachments=None,
                        text=None, response_type='in_channel',
                        replace_original='false', delete_original='false'):
@@ -176,26 +198,45 @@ def handle_slack_command(params):
     # Parse the slack command
     try:
         command_text = params['text'][0]
-        cluster, service, reference = command_text.split()
+        cmd = command_text.split() + [None]
+        cluster, service, reference, flag = cmd[:4]
     except ValueError:
+        return help()
+    except KeyError:
         return help()
 
     sess = boto3.session.Session(region_name=region)
     try:
         ecs = sess.client('ecs')
         ecr = sess.client('ecr')
+        ddb = sess.resource('dynamodb')
+        ddb_table = ddb.Table(service_groups_table)
     except NoRegionError as e:
         return handle_error(e)
 
-    try:
-        td = register_task_def_with_new_image(
-            ecs, ecr, cluster, service, reference)
-        res = deploy_task_definition(ecs, cluster, service, td)
-    except Exception as e:
-        return handle_error(e)
+    if flag:
+        if flag == '-g':
+            print('Running group deployment on %s' % service)
+            try:
+                services = get_service_group(ddb_table, service)
+            except Exception as e:
+                return handle_error(e)
+        else:
+            return handle_error('Unsupported flag %s' % flag)
+    else:
+        services = [service]
 
-    td = res['service']['deployments'][0]['taskDefinition'].split('/')[-1]
-    msg = 'Deploying {}.'.format(td)
+    msg = 'Deploying'
+    for srv in services:
+        try:
+            res = deploy(ecs, ecr, cluster, srv, reference)
+        except Exception as e:
+            return handle_error(e)
+
+        td = res['service']['deployments'][0]['taskDefinition'].split('/')[-1]
+        msg += ' {}'.format(td)
+    msg += '.'
+
     if cluster in notifications_filter:
         cid = get_slack_channel_id(notifications_channel)
         msg += ' Notifications in <#{}|{}>'.format(cid, notifications_channel)
