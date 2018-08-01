@@ -2,10 +2,9 @@
 Based on the AWS example for handling ECS events https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_cwet_handling.html
 
 # Installation
-1. Requires changes from https://github.com/serverless/serverless/pull/4694 which
-will be released with version 1.27. Until then just install from master.
+1. Requires changes from https://github.com/serverless/serverless/pull/4694. Install serverless 1.27.0 or higher.
 ```bash
-npm install -g serverless/serverless#master
+npm install -g serverless@^1.27.0
 ```
 
 2. Install python requirements serverless plugin in the app directory.
