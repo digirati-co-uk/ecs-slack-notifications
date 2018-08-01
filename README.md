@@ -25,8 +25,9 @@ lambda:
     SLACK_API_TOKEN: "xoxa-11111111111-1111111111111-1111111111111-abcd3abcd3abcd3abcd3abcd3abcd3123"
     SLACK_VERIFICATION_TOKEN: "asdf1234asdf"
     SLACK_CHANNEL: "ecs-notifications"
-    INCLUDED_CLUSTERS: "production,staging"
+    INCLUDED_CLUSTERS: "all"  # notifications for all clusters
     SERVICE_GROUPS_TABLE: "ecs-slack-ServiceGroups"
+
 ```
 
 5. Install the app on aws
