@@ -2,10 +2,9 @@
 Based on the AWS example for handling ECS events https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_cwet_handling.html
 
 # Installation
-1. Requires changes from https://github.com/serverless/serverless/pull/4694 which
-will be released with version 1.27. Until then just install from master.
+1. Requires changes from https://github.com/serverless/serverless/pull/4694. Install serverless 1.27.0 or higher.
 ```bash
-npm install -g serverless/serverless#master
+npm install -g serverless@^1.27.0
 ```
 
 2. Install python requirements serverless plugin in the app directory.
@@ -25,8 +24,9 @@ lambda:
     SLACK_API_TOKEN: "xoxa-11111111111-1111111111111-1111111111111-abcd3abcd3abcd3abcd3abcd3abcd3123"
     SLACK_VERIFICATION_TOKEN: "asdf1234asdf"
     SLACK_CHANNEL: "ecs-notifications"
-    INCLUDED_CLUSTERS: "production,staging"
     INCLUDED_CLUSTERS: "all"  # notifications for all clusters
+    SERVICE_GROUPS_TABLE: "ecs-slack-ServiceGroups"
+
 ```
 
 5. Install the app on aws
@@ -38,3 +38,17 @@ sls deploy
 Create a slash command `/ecs-deploy` in the Slack app. Set the `Request URL` to the API Gateway created by serverless. 
   - Go to API Gateway and select dev-ecs-slack
   - Under stages get the `Invoke URL` from POST method under /deploy
+
+7. Configure service groups (optional)
+Create items in dynamodb table `ecs-slack-ServiceGroups` to configure service groups. Example:
+```json
+{
+  "group": "myapp",
+  "services": [
+    "myapp",
+    "myapp-worker-1",
+    "myapp-worker-2"
+  ]
+}
+```
+Then to trigger a deployment in slack run: `/ecs-deploy <cluster_name> myapp <reference> -g`
