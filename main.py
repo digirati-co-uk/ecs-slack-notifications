@@ -15,19 +15,43 @@ digest_item_ttl = os.getenv('DIGEST_ITEM_TTL', 2592000)
 state_item_ttl = os.getenv('STATE_ITEM_TTL', 86400)
 slack_ts_timeout = os.getenv('SLACK_TS_TIMEOUT', 600)
 
-
 sc = SlackClient(slack_token)
 
 
-channels = sc.api_call(
-    'channels.list',
-    exclude_archived='true',
-    exclude_members='true',
-)
+def get_slack_channels():
+    channels = []
+    cursor = None
+    response = None
 
-for c in channels['channels']:
-    if c['name'] == channel:
-        channel_id = c['id']
+    while True:
+        try:
+            cursor = response['response_metadata']['next_cursor']
+            if len(cursor) == 0:
+                break
+        except KeyError:
+            break
+        except TypeError:
+            pass
+        response = sc.api_call(
+            'channels.list',
+            exclude_archived='true',
+            exclude_members='true',
+            cursor=cursor
+        )
+        channels += response['channels']
+
+    return channels
+
+
+def get_slack_channel_id(name):
+    channel_id = None
+    channels = get_slack_channels()
+
+    for c in channels:
+        if c['name'] == name:
+            channel_id = c['id']
+
+    return channel_id
 
 
 def lambda_handler(event, context):
@@ -160,7 +184,7 @@ def update_task_digest(event):
         item['slack_ts'] = ts
     ttl_value = int(time.time()) + int(digest_item_ttl)
     item['TTL'] = ttl_value
-    # Store the update item in dynamodb
+    # Store the updated item in dynamodb
     table.put_item(
         Item=item
     )
@@ -221,7 +245,7 @@ def post_update_to_slack(event, item):
             },
         )
     params = {
-        'channel': channel_id,
+        'channel': get_slack_channel_id(channel),
         'attachments': [
             {
                 'title': '{} {} - {}'.format(cluster, service, " ".join(item['images'])),
