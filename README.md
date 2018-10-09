@@ -16,6 +16,10 @@ npm install serverless-dynamodb-autoscaling
 3. Create a Slack application and copy the token. The app needs the following permission scopes:
 - `chat:write`
 
+OR:
+- `channels:read`
+- `chat:write:bot`
+
 4. Create `.env.yml` in the app directory
 ```bash
 $ cat .env.yml
