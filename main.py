@@ -195,6 +195,7 @@ def post_update_to_slack(event, item):
     cluster = e['clusterArn'].split('/')[-1]
     service = e['group'].split(':')[-1]
     td = e['taskDefinitionArn'].split('/')[-1]
+    task_arn = e['taskArn'].split('/')[-1]
     ecs_url = 'https://console.aws.amazon.com/ecs/home?region=' + region + '#/'
     srv_url = ecs_url + 'clusters/' + cluster + '/services/' + service + '/tasks'
     td_url = ecs_url + 'taskDefinitions/' + td.replace(':', '/')
@@ -242,6 +243,13 @@ def post_update_to_slack(event, item):
                 'title': 'Failed',
                 'value': stats['failed'],
                 'short': 'false'
+            },
+        )
+        fields.append(
+                {
+                'title': 'TaskID',
+                'value': task_arn,
+                'short': 'true'
             },
         )
     params = {
