@@ -246,7 +246,7 @@ def post_update_to_slack(event, item):
             },
         )
         fields.append(
-                {
+            {
                 'title': 'TaskID',
                 'value': task_arn,
                 'short': 'true'
