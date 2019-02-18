@@ -110,12 +110,14 @@ def lambda_handler(event, context):
             table.put_item(
                 Item=new_record
             )
-            update_task_digest(event)
+            if event['detail-type'] == 'ECS Task State Change':
+                update_task_digest(event)
         else:
             print("Received event is more recent version than stored event - ignoring")
     else:
         print("Saving new event - ID " + event_id)
-        update_task_digest(event)
+        if event['detail-type'] == 'ECS Task State Change':
+            update_task_digest(event)
 
         table.put_item(
             Item=new_record
@@ -260,7 +262,9 @@ def post_update_to_slack(event, item):
                 'title_link': srv_url,
                 'color': color,
                 'fields': fields,
-                'footer': td_link + ' ' + e['startedBy']
+                'footer': '[ecs {}] {} {}'.format(e['launchType'].lower(),
+                                                  td_link,
+                                                  e['startedBy'])
             }
         ]
     }
