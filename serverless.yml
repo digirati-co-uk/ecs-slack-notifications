@@ -67,7 +67,7 @@ functions:
     handler: main.lambda_handler
     description: Store ECS events in dynamodb and notify slack
     memorySize: 128
-    timeout: 120
+    timeout: 30
     reservedConcurrency: 1
     environment: ${file(.env.yml):lambda.environment}
     events:
