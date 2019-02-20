@@ -274,7 +274,11 @@ def post_update_to_slack(event, item):
         res = sc.api_call('chat.update', ts=ts, **params)
     else:
         res = sc.api_call('chat.postMessage', **params)
-        ts = res['message']['ts']
+        try:
+            ts = res['message']['ts']
+        except KeyError:
+            print('Error: Cannot get slack timestamp. Slack response:')
+            print(res)
     print('Slack response:')
     print(res)
     return ts
