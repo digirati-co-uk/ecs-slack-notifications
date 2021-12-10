@@ -39,7 +39,7 @@ sls deploy
 ```
 
 6. Create Slack Deploy Slash Command (optional)
-Create a slash command `/ecs-deploy` in the Slack app. Set the `Request URL` to the API Gateway created by serverless. 
+Create a slash command `/ecs-deploy` in the Slack app. Set the `Request URL` to the API Gateway created by serverless.
   - Go to API Gateway and select dev-ecs-slack
   - Under stages get the `Invoke URL` from POST method under /deploy
 
