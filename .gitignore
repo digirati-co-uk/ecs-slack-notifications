@@ -249,3 +249,7 @@ cython_debug/
 ### Serverless ###
 # Ignore build directory
 .serverless
+
+# build artifacts
+/package
+*.zip
