@@ -6,6 +6,7 @@ import time
 from botocore.exceptions import ClientError
 from collections import Counter
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 slack_token = os.environ["SLACK_API_TOKEN"]
 channel = os.environ["SLACK_CHANNEL"]
@@ -18,40 +19,70 @@ table_task_state = os.environ["TABLE_TASK_STATE"]
 table_task_digest = os.environ["TABLE_TASK_DIGEST"]
 table_container_instance_state = os.environ["TABLE_CONTAINER_INSTANCE_STATE"]
 
-wc = WebClient(slack_token)
+wc = WebClient(token=slack_token)
+
+# Cache for channel ID to avoid repeated API calls
+_channel_id_cache = {}
 
 
 def get_slack_channels():
+    """Fetch all public Slack channels with pagination support."""
     channels = []
     cursor = None
-    response = None
 
-    while True:
-        try:
-            cursor = response["response_metadata"]["next_cursor"]
-            if len(cursor) == 0:
+    try:
+        while True:
+            response = wc.conversations_list(
+                exclude_archived=True, 
+                cursor=cursor, 
+                types="public_channel",
+                limit=200  # Explicitly set limit for better performance
+            )
+            
+            channels.extend(response.get("channels", []))
+            
+            # Check for next cursor
+            cursor = response.get("response_metadata", {}).get("next_cursor", "")
+            if not cursor:
                 break
-        except KeyError:
-            break
-        except TypeError:
-            pass
-        response = wc.conversations_list(
-            exclude_archived=True, cursor=cursor, types="public_channel"
-        )
-        channels += response["channels"]
+                
+    except SlackApiError as e:
+        print(f"Error fetching Slack channels: {e.response['error']}")
+        raise
 
     return channels
 
 
 def get_slack_channel_id(name):
-    channel_id = None
-    channels = get_slack_channels()
-
-    for c in channels:
-        if c["name"] == name:
-            channel_id = c["id"]
-
-    return channel_id
+    """
+    Get Slack channel ID by name with caching.
+    Returns the channel ID or None if not found.
+    """
+    # Check cache first
+    if name in _channel_id_cache:
+        return _channel_id_cache[name]
+    
+    # If channel name starts with #, remove it
+    channel_name = name.lstrip('#')
+    
+    try:
+        channels = get_slack_channels()
+        
+        for c in channels:
+            if c["name"] == channel_name:
+                channel_id = c["id"]
+                # Cache the result
+                _channel_id_cache[name] = channel_id
+                return channel_id
+        
+        print(f"Warning: Channel '{channel_name}' not found")
+        return None
+        
+    except SlackApiError as e:
+        print(f"Error looking up channel ID: {e.response['error']}")
+        # Fall back to using the channel name directly
+        # Slack API accepts channel names prefixed with #
+        return f"#{channel_name}"
 
 
 def lambda_handler(event, context):
@@ -173,7 +204,8 @@ def update_task_digest(event):
         update_slack = False
     if update_slack:
         ts = post_update_to_slack(event, item)
-        item["slack_ts"] = ts
+        if ts:  # Only update if we got a valid timestamp
+            item["slack_ts"] = ts
     ttl_value = int(time.time()) + int(digest_item_ttl)
     item["TTL"] = ttl_value
     # Store the updated item in dynamodb
@@ -181,6 +213,10 @@ def update_task_digest(event):
 
 
 def post_update_to_slack(event, item):
+    """
+    Post or update a message in Slack.
+    Returns the message timestamp or None if posting failed.
+    """
     e = event["detail"]
     cluster = e["clusterArn"].split("/")[-1]
     service = e["group"].split(":")[-1]
@@ -230,46 +266,59 @@ def post_update_to_slack(event, item):
         fields.append(
             {"title": "TaskID", "value": task_arn, "short": "true"},
         )
-    params = {
-        "channel": get_slack_channel_id(channel),
-        "attachments": [
-            {
-                "title": "{} {} - {}".format(
-                    cluster, service, " ".join(item["images"])
-                ),
-                "title_link": srv_url,
-                "color": color,
-                "fields": fields,
-                "footer": "[ecs {}] {} {}".format(
-                    e["launchType"].lower(), td_link, e["startedBy"]
-                ),
-            }
-        ],
-        "as_user": True,
-    }
+    
+    channel_id = get_slack_channel_id(channel)
+    if not channel_id:
+        print(f"Error: Could not resolve channel '{channel}'")
+        return None
+    
+    attachments = [
+        {
+            "title": "{} {} - {}".format(
+                cluster, service, " ".join(item["images"])
+            ),
+            "title_link": srv_url,
+            "color": color,
+            "fields": fields,
+            "footer": "[ecs {}] {} {}".format(
+                e["launchType"].lower(), td_link, e["startedBy"]
+            ),
+        }
+    ]
 
-    if "slack_ts" in item:
-        ts = item["slack_ts"]
-        res = wc.chat_update(
-            ts=ts,
-            channel=params["channel"],
-            attachments=params["attachments"],
-            as_user=params["as_user"],
-        )
-    else:
-        res = wc.chat_postMessage(
-            channel=params["channel"],
-            attachments=params["attachments"],
-            as_user=params["as_user"],
-        )
-        try:
-            ts = res["message"]["ts"]
-        except KeyError:
-            print("Error: Cannot get slack timestamp. Slack response:")
-            print(res)
-    print("Slack response:")
-    print(res)
-    return ts
+    try:
+        if "slack_ts" in item:
+            # Update existing message
+            ts = item["slack_ts"]
+            res = wc.chat_update(
+                ts=ts,
+                channel=channel_id,
+                attachments=attachments,
+                # Removed deprecated as_user parameter
+            )
+            print("Slack message updated successfully")
+        else:
+            # Post new message
+            res = wc.chat_postMessage(
+                channel=channel_id,
+                attachments=attachments,
+                # Removed deprecated as_user parameter
+            )
+            ts = res.get("ts") or res.get("message", {}).get("ts")
+            print("Slack message posted successfully")
+        
+        print("Slack response:")
+        print(res)
+        return ts
+        
+    except SlackApiError as e:
+        print(f"Error posting to Slack: {e.response['error']}")
+        print(f"Full error response: {e.response}")
+        return None
+    except KeyError as e:
+        print(f"Error: Cannot get slack timestamp from response. Key error: {e}")
+        print(f"Response was: {res}")
+        return None
 
 
 def get_task_definition(td):
