@@ -1,58 +1,56 @@
 # ecs-slack-notifications
 Based on the AWS example for handling ECS events https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_cwet_handling.html
 
-# Installation
-1. Requires changes from https://github.com/serverless/serverless/pull/4694. Install serverless 1.27.0 or higher.
+An AWS Lambda function that listens to ECS CloudWatch Events and posts deployment status notifications to a Slack channel.
+
+## Prerequisites
+
+- Python 3.x
+- AWS CLI configured with appropriate credentials
+- A Slack workspace where you can create apps
+
+## 1. Create a Slack App
+
+1. Go to https://api.slack.com/apps and create a new app.
+2. Under **OAuth & Permissions**, add the following bot token scopes:
+   - `channels:read`
+   - `chat:write`
+3. Install the app to your workspace and copy the **Bot User OAuth Token** (`xoxb-...`).
+4. Invite the bot to the channel you want notifications posted in (e.g. `/invite @your-bot`).
+
+## Environment Variables
+
+The Lambda functions read the following environment variables:
+
+### `main.py` (notify function)
+
+| Variable                         | Description                                                  |
+| -------------------------------- | ------------------------------------------------------------ |
+| `SLACK_API_TOKEN`                | Slack bot token (`xoxb-...`)                                 |
+| `SLACK_CHANNEL`                  | Channel name to post notifications to                        |
+| `INCLUDED_CLUSTERS`              | Comma-separated cluster names to monitor, or `"all"`         |
+| `AWS_REGION`                     | AWS region for ECS/DynamoDB clients                          |
+| `TABLE_TASK_STATE`               | DynamoDB table name for task state                           |
+| `TABLE_TASK_DIGEST`              | DynamoDB table name for task digest                          |
+| `TABLE_CONTAINER_INSTANCE_STATE` | DynamoDB table name for container instance state             |
+| `DIGEST_ITEM_TTL`                | TTL in seconds for digest items (default: 2592000 / 30 days) |
+| `STATE_ITEM_TTL`                 | TTL in seconds for state items (default: 86400 / 24h)        |
+
+## Bulding Lambda Function
+
+Build a zip and upload it manually to AWS Lambda:
+
 ```bash
-npm install -g serverless@^1.27.0
+pip install -r requirements.txt
+./build_zip.sh
 ```
 
-2. Install python requirements serverless plugin in the app directory.
+## Local Development
+
 ```bash
-npm install serverless-python-requirements
-npm install serverless-dynamodb-autoscaling
+pip install -r requirements.txt
+
+# Install and run pre-commit hooks (uses black for formatting)
+pre-commit install
+pre-commit run --all-files
 ```
-
-3. Create a Slack application and copy the token. The app needs the following permission scopes:
-- `chat:write`
-
-OR:
-- `channels:read`
-- `chat:write:bot`
-
-4. Create `.env.yml` in the app directory
-```bash
-$ cat .env.yml
-lambda:
-  environment:
-    SLACK_API_TOKEN: "xoxa-11111111111-1111111111111-1111111111111-abcd3abcd3abcd3abcd3abcd3abcd3123"
-    SLACK_VERIFICATION_TOKEN: "asdf1234asdf"
-    SLACK_CHANNEL: "ecs-notifications"
-    INCLUDED_CLUSTERS: "all"  # notifications for all clusters
-    SERVICE_GROUPS_TABLE: "ecs-slack-ServiceGroups"
-
-```
-
-5. Install the app on aws
-```bash
-sls deploy
-```
-
-6. Create Slack Deploy Slash Command (optional)
-Create a slash command `/ecs-deploy` in the Slack app. Set the `Request URL` to the API Gateway created by serverless.
-  - Go to API Gateway and select dev-ecs-slack
-  - Under stages get the `Invoke URL` from POST method under /deploy
-
-7. Configure service groups (optional)
-Create items in dynamodb table `ecs-slack-ServiceGroups` to configure service groups. Example:
-```json
-{
-  "group": "myapp",
-  "services": [
-    "myapp",
-    "myapp-worker-1",
-    "myapp-worker-2"
-  ]
-}
-```
-Then to trigger a deployment in slack run: `/ecs-deploy <cluster_name> myapp <reference> -g`
