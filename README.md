@@ -35,6 +35,9 @@ The Lambda functions read the following environment variables:
 | `TABLE_CONTAINER_INSTANCE_STATE` | DynamoDB table name for container instance state             |
 | `DIGEST_ITEM_TTL`                | TTL in seconds for digest items (default: 2592000 / 30 days) |
 | `STATE_ITEM_TTL`                 | TTL in seconds for state items (default: 86400 / 24h)        |
+| `SLACK_GROUP_SIZE`               | Max tasks per Slack message before splitting into a new one (default: 50) |
+
+> Grouping is per-deployment (keyed on ECS `startedBy`), so a new deployment (e.g. `--force-new-deployment`) always starts a fresh set of messages from message 1.
 
 ## Bulding Lambda Function
 

@@ -15,6 +15,7 @@ region = os.environ["AWS_REGION"]
 digest_item_ttl = os.getenv("DIGEST_ITEM_TTL", 2592000)
 state_item_ttl = os.getenv("STATE_ITEM_TTL", 86400)
 slack_ts_timeout = os.getenv("SLACK_TS_TIMEOUT", 600)
+slack_group_size = int(os.getenv("SLACK_GROUP_SIZE", 50))
 table_task_state = os.environ["TABLE_TASK_STATE"]
 table_task_digest = os.environ["TABLE_TASK_DIGEST"]
 table_container_instance_state = os.environ["TABLE_CONTAINER_INSTANCE_STATE"]
@@ -149,6 +150,32 @@ def lambda_handler(event, context):
         table.put_item(Item=new_record)
 
 
+def chunk_list(items, size):
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def assign_task_to_group(item, task_id):
+    """
+    Assign a task ID to a group of at most slack_group_size tasks, appending
+    to the most recent group while it has room and only opening a new group
+    once it is full. Existing membership is preserved across calls so a task
+    always updates the same Slack message it was first reported in.
+    """
+    groups = item.get("task_groups")
+    if not groups:
+        # Digest predates grouping support - bucket everything seen so far.
+        item["task_groups"] = chunk_list(list(item["tasks"].keys()), slack_group_size)
+        return
+
+    if any(task_id in g for g in groups):
+        return
+
+    if groups and len(groups[-1]) < slack_group_size:
+        groups[-1].append(task_id)
+    else:
+        groups.append([task_id])
+
+
 def update_task_digest(event):
     table_name = table_task_digest
     dynamodb = boto3.resource("dynamodb", region_name=region)
@@ -180,6 +207,8 @@ def update_task_digest(event):
             else:
                 item["stoppedReason"] = {task_id: event_detail["stoppedReason"]}
 
+        assign_task_to_group(item, task_id)
+
     else:
         print(("CREATING NEW DIGEST: Id " + event_id))
         td = get_task_definition(event_detail["taskDefinitionArn"])
@@ -197,56 +226,47 @@ def update_task_digest(event):
             "updatedAt": event_detail["updatedAt"],
             "createdAt": event_detail["createdAt"],
             "images": images,
+            "task_groups": [[task_id]],
         }
     if included_clusters.lower() == "all":
         update_slack = True
     elif item["cluster"] not in included_clusters.split(","):
         update_slack = False
     if update_slack:
-        ts = post_update_to_slack(event, item)
-        if ts:  # Only update if we got a valid timestamp
-            item["slack_ts"] = ts
+        post_update_to_slack(event, item)
     ttl_value = int(time.time()) + int(digest_item_ttl)
     item["TTL"] = ttl_value
     # Store the updated item in dynamodb
     table.put_item(Item=item)
 
 
-def post_update_to_slack(event, item):
+def build_group_fields(item, task_ids, task_arn):
     """
-    Post or update a message in Slack.
-    Returns the message timestamp or None if posting failed.
+    Compute the Slack attachment color/fields for a single group of task
+    IDs within a digest (a subset of item["tasks"]/item["stoppedReason"]).
     """
-    e = event["detail"]
-    cluster = e["clusterArn"].split("/")[-1]
-    service = e["group"].split(":")[-1]
-    td = e["taskDefinitionArn"].split("/")[-1]
-    task_arn = e["taskArn"].split("/")[-1]
-    ecs_url = "https://console.aws.amazon.com/ecs/home?region=" + region + "#/"
-    srv_url = ecs_url + "clusters/" + cluster + "/services/" + service + "/tasks"
-    td_url = ecs_url + "taskDefinitions/" + td.replace(":", "/")
-    td_link = "<" + td_url + "|" + td + ">"
-
-    # Report scaling in/out stats
     rs = ["RUNNING", "STOPPED"]
+    group_tasks = {tid: item["tasks"][tid] for tid in task_ids if tid in item["tasks"]}
+
     stats = {}
-    completed = Counter(x for x in list(item["tasks"].values()) if x in rs)
-    stats["completed"] = "\n".join(
-        ["{}: {}".format(*x) for x in list(completed.items())]
-    )
+    completed = Counter(x for x in group_tasks.values() if x in rs)
+    stats["completed"] = "\n".join(["{}: {}".format(*x) for x in completed.items()])
 
-    in_progress = Counter(x for x in list(item["tasks"].values()) if x not in rs)
-    stats["in_progress"] = "\n".join(
-        ["{}: {}".format(*x) for x in list(in_progress.items())]
-    )
+    in_progress = Counter(x for x in group_tasks.values() if x not in rs)
+    stats["in_progress"] = "\n".join(["{}: {}".format(*x) for x in in_progress.items()])
 
-    if "stoppedReason" in item:
+    group_stopped_reasons = {
+        tid: reason
+        for tid, reason in item.get("stoppedReason", {}).items()
+        if tid in group_tasks
+    }
+    if group_stopped_reasons:
         failed = Counter(
             x
-            for x in list(item["stoppedReason"].values())
+            for x in group_stopped_reasons.values()
             if not x.startswith("Scaling activity")
         )
-        stats["failed"] = "\n".join(["{}: {}".format(*x) for x in list(failed.items())])
+        stats["failed"] = "\n".join(["{}: {}".format(*x) for x in failed.items()])
 
     fields = [
         {"title": "Completed", "value": stats["completed"], "short": "true"},
@@ -258,25 +278,74 @@ def post_update_to_slack(event, item):
         fields.append(
             {"title": "In Progress", "value": stats["in_progress"], "short": "true"},
         )
-    if "failed" in stats and len(stats["failed"]) != 0:
+    if stats.get("failed"):
         color = "danger"
         fields.append(
             {"title": "Failed", "value": stats["failed"], "short": "false"},
         )
-        fields.append(
-            {"title": "TaskID", "value": task_arn, "short": "true"},
-        )
-    
+        if task_arn in task_ids:
+            fields.append(
+                {"title": "TaskID", "value": task_arn, "short": "true"},
+            )
+
+    return color, fields
+
+
+def post_update_to_slack(event, item):
+    """
+    Post or update the Slack message for the task group affected by this
+    event - not every group in the digest.
+
+    Deployments that accumulate more than slack_group_size tasks (e.g. a
+    crash loop) are split across multiple messages instead of growing one
+    message indefinitely - 110 tasks with the default group size of 50
+    becomes 3 messages (50/50/10). Only the group containing the task this
+    event is about is touched, so a single task update costs one Slack API
+    call regardless of how many groups the deployment has. Mutates
+    item["slack_ts"] (a dict of group index -> Slack message timestamp) in
+    place.
+    """
+    e = event["detail"]
+    cluster = e["clusterArn"].split("/")[-1]
+    service = e["group"].split(":")[-1]
+    td = e["taskDefinitionArn"].split("/")[-1]
+    task_arn = e["taskArn"].split("/")[-1]
+    ecs_url = "https://console.aws.amazon.com/ecs/home?region=" + region + "#/"
+    srv_url = ecs_url + "clusters/" + cluster + "/services/" + service + "/tasks"
+    td_url = ecs_url + "taskDefinitions/" + td.replace(":", "/")
+    td_link = "<" + td_url + "|" + td + ">"
+
     channel_id = get_slack_channel_id(channel)
     if not channel_id:
         print(f"Error: Could not resolve channel '{channel}'")
-        return None
-    
+        return
+
+    groups = item.get("task_groups") or chunk_list(
+        list(item["tasks"].keys()), slack_group_size
+    )
+
+    index = next((i for i, task_ids in enumerate(groups) if task_arn in task_ids), None)
+    if index is None:
+        print(f"Error: Task {task_arn} not found in any task_groups bucket - skipping Slack post")
+        return
+
+    # Digests created before grouping support store slack_ts as a bare
+    # string for their single message - treat that as group "0".
+    slack_ts = item.get("slack_ts") or {}
+    if isinstance(slack_ts, str):
+        slack_ts = {"0": slack_ts}
+
+    title = "{} {} - {}".format(cluster, service, " ".join(item["images"]))
+
+    task_ids = groups[index]
+    color, fields = build_group_fields(item, task_ids, task_arn)
+    group_title = title
+    if len(groups) > 1:
+        group_title += " (part {} of {})".format(index + 1, len(groups))
+
     attachments = [
         {
-            "title": "{} {} - {}".format(
-                cluster, service, " ".join(item["images"])
-            ),
+            "title": group_title,
             "title_link": srv_url,
             "color": color,
             "fields": fields,
@@ -286,39 +355,38 @@ def post_update_to_slack(event, item):
         }
     ]
 
+    key = str(index)
+    res = None
     try:
-        if "slack_ts" in item:
-            # Update existing message
-            ts = item["slack_ts"]
+        if key in slack_ts:
             res = wc.chat_update(
-                ts=ts,
+                ts=slack_ts[key],
                 channel=channel_id,
                 attachments=attachments,
-                # Removed deprecated as_user parameter
             )
-            print("Slack message updated successfully")
+            print(f"Slack message for group {index} updated successfully")
         else:
-            # Post new message
             res = wc.chat_postMessage(
                 channel=channel_id,
                 attachments=attachments,
-                # Removed deprecated as_user parameter
             )
-            ts = res.get("ts") or res.get("message", {}).get("ts")
-            print("Slack message posted successfully")
-        
+            print(f"Slack message for group {index} posted successfully")
+
+        ts = res.get("ts") or res.get("message", {}).get("ts")
+        if ts:
+            slack_ts[key] = ts
+
         print("Slack response:")
         print(res)
-        return ts
-        
-    except SlackApiError as e:
-        print(f"Error posting to Slack: {e.response['error']}")
-        print(f"Full error response: {e.response}")
-        return None
-    except KeyError as e:
-        print(f"Error: Cannot get slack timestamp from response. Key error: {e}")
+
+    except SlackApiError as se:
+        print(f"Error posting to Slack for group {index}: {se.response['error']}")
+        print(f"Full error response: {se.response}")
+    except KeyError as ke:
+        print(f"Error: Cannot get slack timestamp from response. Key error: {ke}")
         print(f"Response was: {res}")
-        return None
+
+    item["slack_ts"] = slack_ts
 
 
 def get_task_definition(td):
