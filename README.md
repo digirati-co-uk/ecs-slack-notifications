@@ -48,6 +48,10 @@ pip install -r requirements.txt
 ./build_zip.sh
 ```
 
+Pass an optional version (e.g. `./build_zip.sh 2.0.0`) to name the zip `ecs-slack-notifications-2.0.0.zip`, otherwise a timestamp is used.
+
+Publishing a GitHub release runs the `Release` workflow, which builds `ecs-slack-notifications-{version}.zip` (leading `v` stripped from the tag) and attaches it to the release.
+
 ## Local Development
 
 ```bash
